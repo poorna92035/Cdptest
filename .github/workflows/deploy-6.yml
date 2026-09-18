@@ -1,0 +1,181 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Immutable image tag to promote (leave blank to use the latest tag pushed to ECR)"
+        required: false
+        type: string
+        default: ""
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options: [dev, uat, prod]
+      deploy_target:
+        description: "Which compute target to deploy"
+        required: true
+        type: choice
+        options: [ecs, lambda]
+      run_tests:
+        description: "Run smoke/regression tests before deploying"
+        required: false
+        type: boolean
+        default: true
+
+env:
+  APP_NAME: dmaas-api
+  AWS_REGION: us-east-1              # placeholder — confirm with Architecture
+  ECR_REPOSITORY: ""                 # placeholder
+  ECS_CLUSTER: ""                    # placeholder
+  ECS_SERVICE: ""                    # placeholder
+  LAMBDA_FUNCTION_NAME: ""           # placeholder
+  DYNATRACE_TENANT_URL: ""           # placeholder
+  DYNATRACE_API_TOKEN_SECRET: DYNATRACE_API_TOKEN
+
+jobs:
+  resolve-image:
+    name: Resolve Image Tag from ECR
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.resolve.outputs.image_tag }}
+    steps:
+      # Required secret: AWS_DEPLOY_ROLE_ARN_<environment> (e.g. AWS_DEPLOY_ROLE_ARN_dev)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_DEPLOY_ROLE_ARN_{0}', inputs.environment)] }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve tag (explicit input, or latest pushed to ECR)
+        id: resolve
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "Using explicitly requested tag: ${{ inputs.image_tag }}"
+            echo "image_tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            REPO_NAME="${ECR_REPOSITORY##*/}"
+            LATEST_TAG=$(aws ecr describe-images \
+              --repository-name "${REPO_NAME}" \
+              --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
+              --output text)
+            if [ -z "${LATEST_TAG}" ] || [ "${LATEST_TAG}" == "None" ]; then
+              echo "No images found in ECR repository '${REPO_NAME}'." >&2
+              exit 1
+            fi
+            echo "Resolved latest pushed tag from ECR: ${LATEST_TAG}"
+            echo "image_tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
+  pre-deploy-tests:
+    name: Pre-deploy Tests
+    if: ${{ inputs.run_tests }}
+    needs: resolve-image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run smoke/regression tests (dry-run placeholder)
+        run: |
+          echo "Testing promoted artifact ${{ needs.resolve-image.outputs.image_tag }} for ${{ inputs.environment }}"
+          echo "TODO: point at real test suite once test-account resources exist"
+
+  approval-gate:
+    name: Approval Gate
+    needs: [resolve-image, pre-deploy-tests]
+    if: always() && (needs.pre-deploy-tests.result == 'success' || needs.pre-deploy-tests.result == 'skipped')
+    runs-on: ubuntu-latest
+    # UAT and Prod route through a protected GitHub Environment requiring reviewer approval.
+    # Configure required reviewers under Settings > Environments > uat / prod.
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Confirm approval
+        run: echo "Approved to deploy ${{ needs.resolve-image.outputs.image_tag }} to ${{ inputs.environment }} (${{ inputs.deploy_target }})"
+
+  deploy-ecs:
+    name: Deploy to ECS
+    needs: [resolve-image, approval-gate]
+    if: ${{ inputs.deploy_target == 'ecs' }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Placeholder — AWS account/IAM role per environment pending Architecture sign-off
+      - name: Configure AWS credentials (dry-run placeholder)
+        if: env.ECS_CLUSTER != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_DEPLOY_ROLE_ARN_{0}', inputs.environment)] }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy immutable image to ECS (dry-run placeholder)
+        run: |
+          if [ -z "${ECS_CLUSTER}" ] || [ -z "${ECS_SERVICE}" ]; then
+            echo "ECS_CLUSTER/ECS_SERVICE not set yet — dry-run only."
+            echo "Would update service '${ECS_SERVICE}' on cluster '${ECS_CLUSTER}'"
+            echo "to image ${ECR_REPOSITORY}:${{ needs.resolve-image.outputs.image_tag }} in ${{ inputs.environment }}."
+          else
+            aws ecs update-service \
+              --cluster "${ECS_CLUSTER}" \
+              --service "${ECS_SERVICE}" \
+              --force-new-deployment
+          fi
+
+  deploy-lambda:
+    name: Deploy to Lambda
+    needs: [resolve-image, approval-gate]
+    if: ${{ inputs.deploy_target == 'lambda' }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Placeholder — AWS account/IAM role per environment pending Architecture sign-off
+      - name: Configure AWS credentials (dry-run placeholder)
+        if: env.LAMBDA_FUNCTION_NAME != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_DEPLOY_ROLE_ARN_{0}', inputs.environment)] }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update Lambda function + publish alias (dry-run placeholder)
+        run: |
+          if [ -z "${LAMBDA_FUNCTION_NAME}" ]; then
+            echo "LAMBDA_FUNCTION_NAME not set yet — dry-run only."
+            echo "Would update function '${LAMBDA_FUNCTION_NAME}'"
+            echo "to image ${ECR_REPOSITORY}:${{ needs.resolve-image.outputs.image_tag }} and point alias '${{ inputs.environment }}' at the new version."
+          else
+            aws lambda update-function-code \
+              --function-name "${LAMBDA_FUNCTION_NAME}" \
+              --image-uri "${ECR_REPOSITORY}:${{ needs.resolve-image.outputs.image_tag }}"
+
+            aws lambda wait function-updated \
+              --function-name "${LAMBDA_FUNCTION_NAME}"
+
+            NEW_VERSION=$(aws lambda publish-version \
+              --function-name "${LAMBDA_FUNCTION_NAME}" \
+              --query 'Version' --output text)
+
+            aws lambda update-alias \
+              --function-name "${LAMBDA_FUNCTION_NAME}" \
+              --name "${{ inputs.environment }}" \
+              --function-version "${NEW_VERSION}"
+          fi
+
+      - name: Rollback note
+        run: |
+          echo "Rollback: re-run this workflow with a prior image_tag,"
+          echo "or point the '${{ inputs.environment }}' alias back at the previous Lambda version."
+
+  post-deploy-verification:
+    name: Post-deploy Verification (Dynatrace)
+    needs: [deploy-ecs, deploy-lambda]
+    if: always() && (needs.deploy-ecs.result == 'success' || needs.deploy-lambda.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      # Placeholder — Dynatrace tenant URL / API token pending
+      - name: Check deployment health (dry-run placeholder)
+        run: |
+          echo "TODO: query Dynatrace (${DYNATRACE_TENANT_URL}) for error rate / availability"
+          echo "on ${APP_NAME} (${{ inputs.deploy_target }}) in ${{ inputs.environment }} post-deploy."
