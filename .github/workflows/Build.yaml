@@ -13,7 +13,7 @@ env:
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ifc-datalab-claims-k8s-site1-oke-np1]
     steps:
       - uses: actions/checkout@v4
 
@@ -38,7 +38,7 @@ jobs:
 
   unit-tests:
     name: Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ifc-datalab-claims-k8s-site1-oke-np1]
     needs: lint
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +70,7 @@ jobs:
 
   nexus-iq:
     name: Nexus IQ (dependency/OSS scan)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ifc-datalab-claims-k8s-site1-oke-np1]
     needs: unit-tests
     # Required secrets: NEXUS_IQ_SERVER_URL, NEXUS_IQ_USERNAME, NEXUS_IQ_PASSWORD
     # Required var:     NEXUS_IQ_APPLICATION_ID
@@ -89,7 +89,7 @@ jobs:
 
   build:
     name: Build (Docker image from Dockerfile)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ifc-datalab-claims-k8s-site1-oke-np1]
     needs: [nexus-iq]
     outputs:
       image_tag: ${{ steps.vars.outputs.image_tag }}
@@ -124,7 +124,7 @@ jobs:
 
   sbom:
     name: SBOM (Syft)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ifc-datalab-claims-k8s-site1-oke-np1]
     needs: build
     steps:
       - uses: actions/checkout@v4
@@ -147,7 +147,7 @@ jobs:
 
   twistlock-scan:
     name: Twistlock / Prisma Cloud Compute Image Scan
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ifc-datalab-claims-k8s-site1-oke-np1]
     needs: build
     # Required secrets: PRISMA_COMPUTE_CONSOLE_URL, PRISMA_COMPUTE_USER, PRISMA_COMPUTE_PASSWORD
     # (Console URL is your Prisma Cloud Compute console, e.g. https://<console>.twistlock.com)
@@ -186,7 +186,7 @@ jobs:
 
   publish-nexus:
     name: Publish to Nexus
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ifc-datalab-claims-k8s-site1-oke-np1]
     needs: [sbom, twistlock-scan]
     # Required secrets: NEXUS_REGISTRY, NEXUS_USERNAME, NEXUS_PASSWORD
     steps:
@@ -212,7 +212,7 @@ jobs:
 
   publish-ecr:
     name: Publish to ECR
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ifc-datalab-claims-k8s-site1-oke-np1]
     needs: publish-nexus
     # Required secret: AWS_DEPLOY_ROLE_ARN
     # Required vars:   ECR_REPOSITORY, AWS_REGION
@@ -257,3 +257,4 @@ jobs:
         with:
           name: build-metadata
           path: build-metadata.txt
+          
