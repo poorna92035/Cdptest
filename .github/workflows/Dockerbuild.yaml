@@ -26,7 +26,7 @@ jobs:
   # 1. LINT
   # ============================================================
   lint:
-    name: Lint
+    name: Code Quality & Linting
     runs-on: [self-hosted, ifc-datalab-claims-k8s-site1-oke-np1]
 
     steps:
@@ -61,7 +61,7 @@ jobs:
   # 2. UNIT TESTS
   # ============================================================
   unit-tests:
-    name: Unit Tests
+    name: Unit Tests & Code Coverage
     runs-on: [self-hosted, ifc-datalab-claims-k8s-site1-oke-np1]
     needs: lint
 
