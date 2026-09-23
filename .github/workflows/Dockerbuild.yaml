@@ -25,7 +25,7 @@ jobs:
   # ============================================================
   # 1. LINT
   # ============================================================
- Code Quality & Linting:
+ lint:
     name: Code Quality & Linting
     runs-on: [self-hosted, ifc-datalab-claims-k8s-site1-oke-np1]
 
