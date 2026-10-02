@@ -19,9 +19,9 @@ env:
 
 jobs:
 
-###############################################################################
+################################################################################
 # Validate + Unit Test
-###############################################################################
+################################################################################
 
   validate-unit-test:
     name: Validate and Unit Test
@@ -36,18 +36,15 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install Dependencies
-        run: npm ci
+      - name: Validate and Run Unit Tests
+        run: |
+          npm ci
+          npm ci --dry-run
+          npm test -- --coverage
 
-      - name: Validate Code
-        run: npm ci --dry-run
-
-      - name: Run Unit Tests
-        run: npm test -- --coverage
-
-###############################################################################
+################################################################################
 # Build Connector Dependencies
-###############################################################################
+################################################################################
 
   build-dependencies:
     name: Build Connector Dependencies
@@ -63,15 +60,14 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install Dependencies
-        run: npm ci
+      - name: Build Connector Dependencies
+        run: |
+          npm ci
+          npm run build
 
-      - name: Build Application
-        run: npm run build
-
-###############################################################################
+################################################################################
 # Docker Build
-###############################################################################
+################################################################################
 
   docker-build:
     name: Docker Build
@@ -88,12 +84,12 @@ jobs:
             -f Dockerfile \
             -t ${CONTAINER_NAME}:${{ github.sha }} .
 
-###############################################################################
-# Generate SBOM
-###############################################################################
+################################################################################
+# SBOM + Prisma Scan
+################################################################################
 
-  sbom:
-    name: Generate SBOM
+  sbom-prisma-scan:
+    name: SBOM and Prisma Scan
     runs-on: ubuntu-latest
     needs: docker-build
 
@@ -114,30 +110,11 @@ jobs:
           format: cyclonedx-json
           output-file: sbom.json
 
-      - name: Upload SBOM
+      - name: Upload SBOM Artifact
         uses: actions/upload-artifact@v4
         with:
           name: cyclonedx-sbom
           path: sbom.json
-
-###############################################################################
-# Prisma Cloud / Twistlock Scan
-###############################################################################
-
-  prisma-scan:
-    name: Prisma Cloud Scan
-    runs-on: ubuntu-latest
-    needs: sbom
-
-    steps:
-      - name: Checkout Source
-        uses: actions/checkout@v4
-
-      - name: Build Docker Image
-        run: |
-          docker build \
-            -f Dockerfile \
-            -t ${CONTAINER_NAME}:${{ github.sha }} .
 
       - name: Download TwistCLI
         run: |
@@ -148,7 +125,7 @@ jobs:
 
           chmod +x twistcli
 
-      - name: Scan Docker Image
+      - name: Prisma Cloud Image Scan
         run: |
           ./twistcli images scan \
             --address https://${{ secrets.PRISMA_CONSOLE_URL }} \
@@ -156,14 +133,14 @@ jobs:
             --password "${{ secrets.PRISMA_SECRET_KEY }}" \
             ${CONTAINER_NAME}:${{ github.sha }}
 
-###############################################################################
+################################################################################
 # Push Image To ECR
-###############################################################################
+################################################################################
 
   push-ecr:
-    name: Push Image To ECR
+    name: Push Docker Image To ECR
     runs-on: ubuntu-latest
-    needs: prisma-scan
+    needs: sbom-prisma-scan
 
     outputs:
       image_uri: ${{ steps.export.outputs.image_uri }}
@@ -189,25 +166,25 @@ jobs:
             -f Dockerfile \
             -t ${CONTAINER_NAME}:${{ github.sha }} .
 
-      - name: Tag Docker Image
+      - name: Tag Image
         run: |
           docker tag \
-            ${CONTAINER_NAME}:${{ github.sha }} \
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          ${CONTAINER_NAME}:${{ github.sha }} \
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
 
-      - name: Push Docker Image
+      - name: Push Image
         run: |
           docker push \
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
 
       - name: Export Image URI
         id: export
         run: |
           echo "image_uri=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" >> $GITHUB_OUTPUT
 
-###############################################################################
+################################################################################
 # Package Lambda Handlers
-###############################################################################
+################################################################################
 
   package-handlers:
     name: Package Lambda Handlers
@@ -229,9 +206,9 @@ jobs:
           name: lambda-handler
           path: artifacts/lambda-handler.zip
 
-###############################################################################
+################################################################################
 # Deploy ECS Service
-###############################################################################
+################################################################################
 
   deploy-ecs:
     name: Deploy ECS Service
@@ -259,7 +236,7 @@ jobs:
           container-name: ${{ env.CONTAINER_NAME }}
           image: ${{ needs.push-ecr.outputs.image_uri }}
 
-      - name: Deploy ECS Task Definition
+      - name: Deploy ECS Service
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
@@ -267,9 +244,9 @@ jobs:
           service: ${{ env.ECS_SERVICE }}
           wait-for-service-stability: true
 
-###############################################################################
+################################################################################
 # Smoke Test
-###############################################################################
+################################################################################
 
   smoke-test:
     name: Smoke Test
@@ -277,11 +254,11 @@ jobs:
     needs: deploy-ecs
 
     steps:
-      - name: Application Health Check
+      - name: Smoke Test
         run: |
           APP_URL=https://your-domain.com/health
 
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL")
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${APP_URL}")
 
           if [ "$STATUS" != "200" ]; then
             echo "Smoke Test Failed"
